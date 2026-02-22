@@ -132,16 +132,37 @@ export function attachGameNamespace(ns: Namespace, deps: GameNamespaceDeps): voi
 
       // Attackers always start. If bot is attacker, play the opening move immediately.
       if (state.phase !== 'GAME_OVER' && state.sideToMove === state.botSide) {
+        const beforeMoveCount = state.moveHistory.length;
+        const actionId = uuidv4();
         ns.to(gid).emit('bot:thinking', { active: true });
         try {
           const botResult = runBotTurn(state, state.difficulty);
           state = botResult.state;
           await deps.store.save(state);
+
+          for (const [idx, mv] of botResult.effects.moveEvents.entries()) {
+            const rec = state.moveHistory[beforeMoveCount + idx];
+            await deps.logEvent(sessionId, 'move_play', gid, {
+              actionId,
+              side: mv.side,
+              isHuman: state.players[mv.side].isHuman,
+              turnNumber: rec?.turn ?? null,
+              from: mv.from,
+              to: mv.to,
+              captures: mv.captures
+            });
+          }
+
           emitMoves(ns, gid, botResult.effects.moveEvents);
           for (const note of botResult.effects.notes) {
             ns.to(gid).emit('turn:note', { message: note });
           }
           ns.to(gid).emit('state', state);
+
+          await maybePersistGameResult(deps, sessionId, state);
+          if (state.phase === 'GAME_OVER' && state.winnerSide) {
+            ns.to(gid).emit('game:over', { winnerSide: state.winnerSide });
+          }
         } finally {
           ns.to(gid).emit('bot:thinking', { active: false });
         }
@@ -165,6 +186,8 @@ export function attachGameNamespace(ns: Namespace, deps: GameNamespaceDeps): voi
       deps.logger.info({ ns: 'ws', ev: 'move_play', sid: socket.id, gameId, from, to });
       let st = await deps.store.load(gameId);
       if (!st) throw new Error(`game_not_found: id=${gameId}`);
+      const actionId = uuidv4();
+      const beforeMoveCount = st.moveHistory.length;
 
       if (st.phase !== 'IN_PROGRESS') throw new Error('game_over');
       if (st.sideToMove !== st.humanSide) throw new Error('invalid_turn');
@@ -173,9 +196,13 @@ export function attachGameNamespace(ns: Namespace, deps: GameNamespaceDeps): voi
       st = result.state;
       await deps.store.save(st);
 
-      for (const mv of result.effects.moveEvents) {
+      for (const [idx, mv] of result.effects.moveEvents.entries()) {
+        const rec = st.moveHistory[beforeMoveCount + idx];
         await deps.logEvent(sessionId, 'move_play', gameId, {
+          actionId,
           side: mv.side,
+          isHuman: st.players[mv.side].isHuman,
+          turnNumber: rec?.turn ?? null,
           from: mv.from,
           to: mv.to,
           captures: mv.captures

@@ -3,6 +3,7 @@ import { config } from './config';
 
 export const logger = pino({
   level: config.logLevel,
+  timestamp: pino.stdTimeFunctions.isoTime,
   transport: config.logPretty
     ? {
         target: 'pino-pretty',
